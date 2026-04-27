@@ -46,7 +46,6 @@ jobs:
       - name: Run docker-compose smoke test
         run: |
           docker compose up -d
-          # Ждём, пока приложение станет доступно
           sleep 5
           curl --fail http://localhost:5000/ || exit 1
           docker compose down
@@ -59,34 +58,32 @@ jobs:
           docker push ${{ secrets.DOCKER_USERNAME }}/myapp:latest
 
   deploy-to-k8s:
-  needs: build-and-integration-test
-  runs-on: ubuntu-latest
-  steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+    needs: build-and-integration-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Create KinD cluster
-      uses: helm/kind-action@v1.8.0
-      with:
-        cluster_name: myapp-cluster
+      - name: Create KinD cluster
+        uses: helm/kind-action@v1.8.0
+        with:
+          cluster_name: myapp-cluster
 
-    - name: Load Docker image into KinD
-      run: |
-        docker pull ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }}
-        kind load docker-image ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }} --name myapp-cluster
+      - name: Load Docker image into KinD
+        run: |
+          docker pull ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }}
+          kind load docker-image ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }} --name myapp-cluster
 
-    - name: Deploy to KinD
-      run: |
-        # Подставляем DOCKER_USERNAME из секрета и IMAGE_TAG (SHA коммита)
-        sed -i "s|DOCKER_USERNAME|${{ secrets.DOCKER_USERNAME }}|g" k8s/deployment.yaml
-        sed -i "s|IMAGE_TAG|${{ github.sha }}|g" k8s/deployment.yaml
+      - name: Deploy to KinD
+        run: |
+          sed -i "s|DOCKER_USERNAME|${{ secrets.DOCKER_USERNAME }}|g" k8s/deployment.yaml
+          sed -i "s|IMAGE_TAG|${{ github.sha }}|g" k8s/deployment.yaml
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+          kubectl rollout status deployment/myapp-deployment
 
-        kubectl apply -f k8s/deployment.yaml
-        kubectl apply -f k8s/service.yaml
-        kubectl rollout status deployment/myapp-deployment
-
-    - name: Test service
-      run: |
-        kubectl port-forward svc/myapp-service 8080:80 &
-        sleep 5
-        curl --fail http://localhost:8080/
+      - name: Test service
+        run: |
+          kubectl port-forward svc/myapp-service 8080:80 &
+          sleep 5
+          curl --fail http://localhost:8080/
