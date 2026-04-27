@@ -5,14 +5,17 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11']
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: |
@@ -24,7 +27,7 @@ jobs:
         env:
           PYTHONPATH: .
 
-  build-and-push:
+  build-and-integration-test:
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -37,8 +40,53 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build Docker image
-        run: docker build -t ${{ secrets.DOCKER_USERNAME }}/myapp:latest .
+      - name: Build Docker image (dev-тег)
+        run: docker build -t myapp:dev .
 
-      - name: Push Docker image
-        run: docker push ${{ secrets.DOCKER_USERNAME }}/myapp:latest
+      - name: Run docker-compose smoke test
+        run: |
+          docker compose up -d
+          # Ждём, пока приложение станет доступно
+          sleep 5
+          curl --fail http://localhost:5000/ || exit 1
+          docker compose down
+
+      - name: Tag and push to Docker Hub
+        run: |
+          docker tag myapp:dev ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }}
+          docker tag myapp:dev ${{ secrets.DOCKER_USERNAME }}/myapp:latest
+          docker push ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }}
+          docker push ${{ secrets.DOCKER_USERNAME }}/myapp:latest
+
+  deploy-to-k8s:
+  needs: build-and-integration-test
+  runs-on: ubuntu-latest
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Create KinD cluster
+      uses: helm/kind-action@v1.8.0
+      with:
+        cluster_name: myapp-cluster
+
+    - name: Load Docker image into KinD
+      run: |
+        docker pull ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }}
+        kind load docker-image ${{ secrets.DOCKER_USERNAME }}/myapp:${{ github.sha }} --name myapp-cluster
+
+    - name: Deploy to KinD
+      run: |
+        # Подставляем DOCKER_USERNAME из секрета и IMAGE_TAG (SHA коммита)
+        sed -i "s|DOCKER_USERNAME|${{ secrets.DOCKER_USERNAME }}|g" k8s/deployment.yaml
+        sed -i "s|IMAGE_TAG|${{ github.sha }}|g" k8s/deployment.yaml
+
+        kubectl apply -f k8s/deployment.yaml
+        kubectl apply -f k8s/service.yaml
+        kubectl rollout status deployment/myapp-deployment
+
+    - name: Test service
+      run: |
+        kubectl port-forward svc/myapp-service 8080:80 &
+        sleep 5
+        curl --fail http://localhost:8080/
