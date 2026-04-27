@@ -46,8 +46,18 @@ jobs:
       - name: Run docker-compose smoke test
         run: |
           docker compose up -d
-          sleep 5
-          curl --fail http://localhost:5000/ || exit 1
+          # Ждём до 30 секунд, пока порт станет доступен
+          echo "Waiting for service to be ready..."
+          for i in {1..30}; do
+            if curl --fail --silent http://localhost:5000/ > /dev/null 2>&1; then
+              echo "Service is up!"
+              break
+            fi
+            echo "Attempt $i: not ready, retrying in 1s..."
+            sleep 1
+          done
+          # Финальная проверка (если не ответил – упадёт)
+          curl --fail http://localhost:5000/ || (docker compose logs && exit 1)
           docker compose down
 
       - name: Tag and push to Docker Hub
